@@ -70,7 +70,7 @@ pub fn proxy_flow(
 
       if n >= buf.capacity() {
         warn!(
-          "[{}] Packet from {} is too large for buffer ({})",
+          "[{}] Packet from {} is too large for allocator (size: {} bytes)",
           flow_name, src, n
         );
       }
