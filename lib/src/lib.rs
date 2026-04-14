@@ -1,4 +1,4 @@
-mod balancer;
+pub mod balancer;
 pub mod bridge;
 pub mod configuration;
 

@@ -6,9 +6,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use dtls::config::Config as DtlsConfig;
-use tokio::{net::UdpSocket, task::JoinSet};
+use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use turn_proxy_lib::balancer::{BalancedConn, ConnFactory};
 
 use crate::{
   configuration::configuration::AppConfiguration,
@@ -65,53 +66,58 @@ pub async fn listening(
       );
 
       let thread_count = provider.threads.unwrap_or(1);
-      let mut handles = JoinSet::new();
 
-      for thread_id in 0..thread_count {
-        let p_clone = provider.clone();
-        let l_clone = listen_socket.clone();
-        let p_addr = peer_addr;
-        let t_token = cancel_token.child_token();
-        let dtls_cert_copy = dtls_config.clone();
-        let interface_addr = match config.common.interface_addr.as_ref() {
-          Some(s) => s
-            .parse::<IpAddr>()
-            .unwrap_or(get_current_interface().await?),
-          None => get_current_interface().await?,
-        };
+      let interface_addr = match config.common.interface_addr.as_ref() {
+        Some(s) => s
+          .parse::<IpAddr>()
+          .unwrap_or(get_current_interface().await?),
+        None => get_current_interface().await?,
+      };
 
-        handles.spawn(async move {
-          let conn = setup_connection(
-            format!("T{}", thread_id).as_str(),
+      let p_clone = provider.clone();
+      let dtls_cfg = dtls_config.clone();
+      let factory: ConnFactory = Arc::new(move || {
+        let p_inner = p_clone.clone();
+        let cfg_inner = dtls_cfg.clone();
+        Box::pin(async move {
+          setup_connection(
+            "BalancedWorker",
             interface_addr,
-            &p_clone,
-            p_addr,
-            dtls_cert_copy,
+            &p_inner,
+            peer_addr,
+            cfg_inner,
           )
-          .await?;
+          .await
+          .map_err(|e| webrtc_util::Error::Other(e.to_string()))
+        })
+      });
 
-          run_bridge_thread(thread_id, l_clone, conn, t_token).await
-        });
-      }
+      let balanced_res =
+        BalancedConn::new(thread_count, factory, cancel_token.child_token())
+          .await;
 
-      let should_try_next = tokio::select! {
-        _ = cancel_token.cancelled() => {
-          info!("Terminating all threads...");
-          false
-        }
-        Some(res) = handles.join_next() => {
-          match res {
-            Ok(Ok(_)) => warn!("A thread finished successfully. Switching provider..."),
-            Ok(Err(e)) => error!("Thread error: {}. Switching...", e),
-            Err(e) => error!("Thread panicked: {}", e),
-          }
-          true
+      let balanced_conn = match balanced_res {
+        Ok(c) => c,
+        Err(e) => {
+          error!("Failed to initialize balancer for provider: {:?}", e);
+          continue;
         }
       };
 
-      handles.shutdown().await;
+      let bridge_res = run_bridge_thread(
+        0,
+        listen_socket.clone(),
+        balanced_conn,
+        cancel_token.child_token(),
+      )
+      .await;
 
-      if !should_try_next || cancel_token.is_cancelled() {
+      match bridge_res {
+        Ok(_) => warn!("Bridge finished successfully. Switching provider..."),
+        Err(e) => error!("Bridge error: {}. Switching provider...", e),
+      }
+
+      if cancel_token.is_cancelled() {
         break;
       }
     }

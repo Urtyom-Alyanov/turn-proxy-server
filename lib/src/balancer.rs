@@ -24,7 +24,7 @@ const MAX_RETRY_DELAY_SECS: u64 = 30;
 
 const CONNECTION_CLOSING_DELAY: u64 = 5;
 
-type ConnFactory = Arc<
+pub type ConnFactory = Arc<
   dyn Fn() -> BoxFuture<'static, WebRtcResult<Arc<dyn Conn + Send + Sync>>>
     + Send
     + Sync,
