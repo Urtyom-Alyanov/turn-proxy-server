@@ -1,8 +1,7 @@
 use std::{
   any::Any, net::SocketAddr, sync::{
     Arc, atomic::{
-      AtomicUsize,
-      Ordering
+      AtomicBool, AtomicUsize, Ordering
     }
   }
 };
@@ -15,7 +14,8 @@ use tracing::{debug, error, info, warn};
 use webrtc_util::Conn;
 use async_trait::async_trait;
 use webrtc_util::{Result as WebRtcResult, Error as WebRtcError};
-use bytes::{Bytes};
+use bytes::{Bytes, BytesMut};
+use arc_swap::ArcSwap;
 
 use crate::UDP_MTU;
 pub const CHANNEL_BUF: usize = 1024;
@@ -30,13 +30,18 @@ type ConnFactory = Arc<
   + Send + Sync
 >;
 
+struct ConnectionEntry {
+  conn: RwLock<Arc<dyn Conn + Sync + Send>>,
+  health: AtomicBool
+}
+
 /// Соединение, состоящие из `n`-нного количества соединенией (потоков), при отправке выбирает соединение (поток) через алгоритм round-robin
 /// 
 /// Реализует трейт Conn из webrtc-rs
 pub struct BalancedConn {
-  connections: Vec<RwLock<Arc<dyn Conn + Sync + Send>>>,
+  entries: Vec<ConnectionEntry>,
   send_index: AtomicUsize,
-  recv_queue: Mutex<mpsc::Receiver<(Bytes, SocketAddr)>>,
+  recv_queue: flume::Receiver<(Bytes, SocketAddr)>,
   cancel_token: CancellationToken,
 }
 
@@ -48,24 +53,48 @@ impl BalancedConn {
     cancel_token: CancellationToken
   ) -> WebRtcResult<Arc<Self>>
   {
-    if count <= 0 {
+    if count == 0 {
       panic!("Connections list cannot be empty");
     }
 
-    let mut connections: Vec<RwLock<Arc<dyn Conn + Sync + Send>>> = Vec::with_capacity(count);
-    let (sender, receiver) = mpsc::channel::<(Bytes, SocketAddr)>(CHANNEL_BUF);
+    // let mut connections: Vec<RwLock<Arc<dyn Conn + Sync + Send>>> = Vec::with_capacity(count);
+    // let (sender, receiver) = flume::bounded::<(Bytes, SocketAddr)>(CHANNEL_BUF);
+    // let ct = cancel_token.child_token();
+
+    // let mut futures = Vec::with_capacity(count);
+    // for _ in 0..count {
+    //   futures.push(factory());
+    // }
+    // let conns_results = join_all(futures).await;
+    // for res in conns_results {
+    //   connections.push(RwLock::new(res?));
+    // }
+
+    // let mut conn_health = Vec::with_capacity(count);
+    // for _ in 0..count { conn_health.push(AtomicBool::new(true)); }
+
+    let mut entries: Vec<ConnectionEntry> = Vec::with_capacity(count);
+    let (sender, receiver) = flume::bounded::<(Bytes, SocketAddr)>(CHANNEL_BUF);
     let ct = cancel_token.child_token();
 
+    let mut futures = Vec::with_capacity(count);
     for _ in 0..count {
-      let conn = factory().await?;
-      let shared_conn = RwLock::new(conn);
-      connections.push(shared_conn);
+      futures.push(factory());
+    }
+
+    let conn_results = join_all(futures).await;
+    for res in conn_results {
+      let conn = res?;
+      entries.push(ConnectionEntry {
+        conn: RwLock::new(conn),
+        health: AtomicBool::new(true)
+      });
     }
 
     let res = Arc::new(Self {
       cancel_token: ct,
-      connections,
-      recv_queue: Mutex::new(receiver),
+      entries,
+      recv_queue: receiver,
       send_index: AtomicUsize::new(0)
     });
 
@@ -87,15 +116,15 @@ impl BalancedConn {
     &self,
     idx: usize,
     factory: ConnFactory,
-    sender: mpsc::Sender<(Bytes, SocketAddr)>,
+    sender: flume::Sender<(Bytes, SocketAddr)>,
     ct: CancellationToken
   ) {
-    let mut buf = [0u8; UDP_MTU];
+    let mut buf = vec![0u8; UDP_MTU];
     let mut retry_delay = std::time::Duration::from_secs(MIN_RETRY_DELAY_SECS);
 
     loop {
       let conn = {
-        let lock = self.connections[idx].read();
+        let lock = self.entries[idx].conn.read();
         lock.clone()
       };
 
@@ -104,25 +133,39 @@ impl BalancedConn {
         res = conn.recv_from(&mut buf) => {
           match res {
             Ok((n, src)) => {
+              if !self.entries[idx].health.load(Ordering::Relaxed) {
+                self.entries[idx].health.store(true, Ordering::Release);
+              }
               let data = Bytes::copy_from_slice(&buf[..n]);
-              if sender.send((data, src)).await.is_err() { break; }
+              if sender.send_async((data, src)).await.is_err() { break; }
               retry_delay = std::time::Duration::from_secs(MIN_RETRY_DELAY_SECS);
             },
             Err(e) => {
+              self.entries[idx].health.store(false, Ordering::Release);
               warn!(index = idx, "Flow error: {:?}. Reconnecting ({}s)...", e, retry_delay.as_secs());
 
-              sleep(retry_delay).await;
-
-              match factory().await {
-                Ok(new_conn) => {
-                  info!(index = idx, "Reconnected successfully");
-                  let mut lock = self.connections[idx].write();
-                  *lock = new_conn;
-                  retry_delay = std::time::Duration::from_secs(MIN_RETRY_DELAY_SECS);
-                }
-                Err(re_err) => {
-                  error!(index = idx, "Reconnect failed: {:?}", re_err);
-                  retry_delay = std::cmp::min(retry_delay * 2, std::time::Duration::from_secs(MAX_RETRY_DELAY_SECS));
+              tokio::select! {
+                _ = ct.cancelled() => return,
+                _ = sleep(retry_delay) => {}
+              }
+              
+              tokio::select! {
+                _ = ct.cancelled() => return,
+                res = factory() => {
+                  match res {
+                    Ok(new_conn) => {
+                      info!(index = idx, "Reconnected successfully");
+                      let entry = &self.entries[idx];
+                      let mut lock = entry.conn.write();
+                      *lock = new_conn;
+                      entry.health.store(true, Ordering::Release);
+                      retry_delay = std::time::Duration::from_secs(MIN_RETRY_DELAY_SECS);
+                    }
+                    Err(reconnect_err) => {
+                      error!(index = idx, "Reconnect failed: {:?}", reconnect_err);
+                      retry_delay = std::cmp::min(retry_delay * 2, std::time::Duration::from_secs(MAX_RETRY_DELAY_SECS));
+                    }
+                  };
                 }
               }
             }
@@ -137,14 +180,14 @@ impl BalancedConn {
 impl Conn for BalancedConn {
   fn as_any(&self) -> &(dyn Any + Send + Sync) { self }
 
-  fn local_addr(&self) -> WebRtcResult<SocketAddr> { self.connections[0].read().local_addr() }
-  fn remote_addr(&self) -> Option<SocketAddr> { self.connections[0].read().remote_addr() }
+  fn local_addr(&self) -> WebRtcResult<SocketAddr> { self.entries[0].conn.read().local_addr() }
+  fn remote_addr(&self) -> Option<SocketAddr> { self.entries[0].conn.read().remote_addr() }
 
   async fn connect(&self, addr: SocketAddr) -> WebRtcResult<()>
   {
-    let current_connections: Vec<_> = self.connections
+    let current_connections: Vec<_> = self.entries
       .iter()
-      .map(|lock| lock.read().clone())
+      .map(|entry| entry.conn.read().clone())
       .collect();
 
     let futures = current_connections.iter().map(|c| c.connect(addr));
@@ -160,9 +203,9 @@ impl Conn for BalancedConn {
   async fn close(&self) -> WebRtcResult<()> {
     self.cancel_token.cancel();
 
-    let current_connections: Vec<_> = self.connections
+    let current_connections: Vec<_> = self.entries
       .iter()
-      .map(|lock| lock.read().clone())
+      .map(|entry| entry.conn.read().clone())
       .collect();
     let futures = current_connections.iter().map(|c| c.close());
     
@@ -186,42 +229,94 @@ impl Conn for BalancedConn {
   }
 
   async fn send(&self, buf: &[u8]) -> WebRtcResult<usize> {
-    let idx = self.send_index.fetch_add(1, Ordering::Relaxed) % self.connections.len();
+    let count = self.entries.len();
 
-    let conn = {
-      let lock = self.connections[idx].read();
-      lock.clone()
+    if count == 0 {
+      return Err(WebRtcError::ErrUseClosedNetworkConn);
+    }
+
+    let start_idx = self.send_index.fetch_add(1, Ordering::Relaxed) % count;
+
+    for i in 0..count {
+      let idx = (start_idx + i) % count;
+      debug!(index = idx, "Try to sending...");
+
+      let entry = &self.entries[idx];
+
+      if !entry.health.load(Ordering::Relaxed) {
+        continue;
+      }
+
+      let conn = {
+        let lock = entry.conn.read();
+        lock.clone()
+      };
+
+      match conn.send(buf).await {
+        Ok(n) => return Ok(n),
+        Err(e) => {
+          entry.health.store(false, Ordering::Release);
+          warn!("Sub-connection {} failed to send: {:?}", idx, e);
+          if i == count - 1 { return Err(e); }
+          continue;
+        }
+      };
     };
 
-    conn.send(buf).await
+    Err(WebRtcError::ErrUseClosedNetworkConn)
   }
 
   async fn send_to(&self, buf: &[u8], target: SocketAddr) -> WebRtcResult<usize> {
-    let idx = self.send_index.fetch_add(1, Ordering::Relaxed) % self.connections.len();
+    let count = self.entries.len();
 
-    let conn = {
-      let lock = self.connections[idx].read();
-      lock.clone()
+    if count == 0 {
+      return Err(WebRtcError::ErrUseClosedNetworkConn);
+    }
+
+    let start_idx = self.send_index.fetch_add(1, Ordering::Relaxed) % count;
+
+    for i in 0..count {
+      let idx = (start_idx + i) % count;
+      debug!(index = idx, "Try to sending...");
+
+      let entry = &self.entries[idx];
+
+      if !entry.health.load(Ordering::Relaxed) {
+        continue;
+      }
+
+      let conn = {
+        let lock = entry.conn.read();
+        lock.clone()
+      };
+
+      match conn.send_to(buf, target).await {
+        Ok(n) => return Ok(n),
+        Err(e) => {
+          entry.health.store(false, Ordering::Release);
+          warn!("Sub-connection {} failed to send: {:?}", idx, e);
+          if i == count - 1 { return Err(e); }
+          continue;
+        }
+      };
     };
 
-    conn.send_to(buf, target).await
+    Err(WebRtcError::ErrUseClosedNetworkConn)
   }
 
   async fn recv_from(&self, buf: &mut [u8]) -> WebRtcResult<(usize, SocketAddr)> {
-    let mut queue = self.recv_queue.lock().await;
+    match self.recv_queue.recv_async().await {
+      Ok((data, addr)) => {
+        if data.len() > buf.len() {
+          return Err(WebRtcError::ErrBufferShort);
+        }
 
-    match queue.recv().await {
-      Some((data, addr)) => {
         let n = data.len().min(buf.len());
         buf[..n].copy_from_slice(&data[..n]);
 
-        if n < data.len() {
-          debug!("Provided buffer is smaller than received packet; data truncated");
-        }
-
         Ok((n, addr))
       },
-      None => Err(WebRtcError::ErrClosedListener)
+      Err(_) => Err(WebRtcError::ErrClosedListener)
     }
   }
 
