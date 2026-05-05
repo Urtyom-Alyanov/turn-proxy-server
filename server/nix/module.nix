@@ -42,7 +42,7 @@ in
         ExecStart = concatStringsSep " " [
           "${opt.package}/bin/turn-proxy-server"
           (if opt.configPath != null then "--config=${opt.configPath}" else "--no-config")
-          "--max-connections=${opt.config.maxConnections}"
+          "--max-connections=${builtins.toString opt.config.maxConnections}"
           "--listening-on=${opt.config.listeningOn}"
           "--proxy-into=${opt.config.proxyInto}"
         ];
