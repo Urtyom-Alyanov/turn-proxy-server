@@ -40,11 +40,11 @@ in
       wantedBy = [ "multi-user.target" ];
       serviceConfig = {
         ExecStart = concatStringsSep " " [
-          "${cfg.package}/bin/turn-proxy-server"
-          (if cfg.configPath != null then "--config=${cfg.configPath}" else "--no-config")
-          "--max-connections=${cfg.maxConnections}"
-          "--listening-on=${cfg.config.listeningOn}"
-          "--proxy-into=${cfg.config.proxyInto}"
+          "${opt.package}/bin/turn-proxy-server"
+          (if opt.configPath != null then "--config=${opt.configPath}" else "--no-config")
+          "--max-connections=${builtins.toString opt.config.maxConnections}"
+          "--listening-on=${opt.config.listeningOn}"
+          "--proxy-into=${opt.config.proxyInto}"
         ];
         Restart = "always";
         LimitNOFILE = 65535;
