@@ -17,10 +17,11 @@ use crate::{
 async fn main() -> Result<()>
 {
   let _guard = init_logger();
+  let dns_provider = inbound::dns::configure_yandex_dns()?;
   let config = init_config()?;
   let dtls_config = dtls_configure()?;
 
-  listening(config, dtls_config).await?;
+  listening(config, dtls_config, dns_provider).await?;
 
   Ok(())
 }

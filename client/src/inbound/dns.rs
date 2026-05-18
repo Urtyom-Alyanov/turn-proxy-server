@@ -42,21 +42,14 @@ pub fn configure_yandex_dns() -> Result<YandexDnsResolver>
 {
   let mut config = ResolverConfig::new();
 
-  // config.add_name_server(NameServerConfig::new(
-  //   YANDEX_DNS_FIRST_IP.parse()?,
-  //   Protocol::Udp,
-  // ));
-  // config.add_name_server(NameServerConfig::new(
-  //   YANDEX_DNS_SECOND_IP.parse()?,
-  //   Protocol::Udp,
-  // ));
+  let dns_servernames = [YANDEX_DNS_FIRST_IP, YANDEX_DNS_SECOND_IP];
 
-  for ip in [YANDEX_DNS_FIRST_IP, YANDEX_DNS_SECOND_IP] {
+  for ip in dns_servernames {
     let addr = SocketAddr::new(ip.parse()?, 53);
     config.add_name_server(NameServerConfig::new(addr, Protocol::Udp));
   }
 
-  let resolver =
+  let resolver: Resolver<GenericConnector<TokioRuntimeProvider>> =
     Resolver::builder_with_config(config, TokioConnectionProvider::default())
       .build();
 

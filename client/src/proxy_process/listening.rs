@@ -1,11 +1,13 @@
 use std::{
   net::{IpAddr, SocketAddr},
+  str::FromStr,
   sync::Arc,
   time::Duration,
 };
 
 use anyhow::{Context, Result};
 use dtls::config::Config as DtlsConfig;
+use reqwest::dns::{Name, Resolve};
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -19,9 +21,58 @@ use crate::{
   },
 };
 
+pub async fn get_socket_addr(
+  addr_str: &str,
+  dns_provider: &impl Resolve,
+) -> Result<SocketAddr>
+{
+  if let Ok(addr) = addr_str.parse::<SocketAddr>() {
+    return Ok(addr);
+  }
+
+  info!(
+    "IP is not present in peer address '{}', attempting DNS resolution...",
+    addr_str
+  );
+
+  let (host, port_str) = addr_str.rsplit_once(':').context(
+    "Listening address must include a port (e.g., 'wireguard:8080')",
+  )?;
+
+  let port: u16 = port_str
+    .parse()
+    .context("Port in listening address is not a valid number")?;
+
+  let name = Name::from_str(host)
+    .context("Failed to parse host in listening address")?;
+
+  let ips = dns_provider.resolve(name).await;
+
+  if let Err(e) = &ips {
+    error!("DNS resolution failed for '{}': {}", host, e);
+    return Err(anyhow::anyhow!(
+      "DNS resolution failed for '{}': {}",
+      host,
+      e
+    ));
+  }
+
+  let mut ips = ips.unwrap();
+
+  let socket_addr = ips
+    .next()
+    .context("No IP addresses found for listening address")?;
+  let ip = socket_addr.ip();
+
+  info!("IP successfully resolved for '{}' ({})", addr_str, ip);
+
+  Ok(SocketAddr::new(ip, port))
+}
+
 pub async fn listening(
   config: AppConfiguration,
   dtls_config: DtlsConfig,
+  dns_provider: impl Resolve,
 ) -> Result<()>
 {
   let listen_addr: SocketAddr = config
@@ -29,11 +80,9 @@ pub async fn listening(
     .listening_on
     .parse()
     .context("'listening-on' is not a valid socket address")?;
-  let peer_addr: SocketAddr = config
-    .common
-    .peer_addr
-    .parse()
-    .context("'proxy-into' is not a valid socket address")?;
+  let peer_addr = get_socket_addr(&config.common.peer_addr, &dns_provider)
+    .await
+    .context("Failed to resolve peer address")?;
 
   info!("Listening on: {} UDP", listen_addr);
   info!("Proxying to: {} DTLS UDP", peer_addr);

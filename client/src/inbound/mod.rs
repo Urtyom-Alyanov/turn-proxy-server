@@ -7,7 +7,7 @@ use tracing::info;
 use crate::inbound::{client::create_client, dns::configure_yandex_dns};
 
 mod client;
-mod dns;
+pub mod dns;
 pub mod interface;
 pub mod user_agent;
 
