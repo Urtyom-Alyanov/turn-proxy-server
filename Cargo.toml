@@ -3,7 +3,7 @@ members = ["server", "client", "lib"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.18"
+version = "1.0.20"
 edition = "2024"
 license = "AGPL-3"
 repository = "https://github.com/Urtyom-Alyanov/turn-proxy"
