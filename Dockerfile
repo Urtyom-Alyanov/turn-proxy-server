@@ -20,7 +20,7 @@ COPY . .
 RUN cargo build --release
 
 ## Этап сборки образа
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 LABEL authors="artemos"
 
 COPY --from=builder /usr/src/turn-proxy/target/release/turn-proxy-server /bin/turn-proxy-server
