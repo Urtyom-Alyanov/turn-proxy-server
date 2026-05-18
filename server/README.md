@@ -70,6 +70,69 @@ makepkg -si
 
 Также есть [Dockerfile](./Dockerfile), но сам пакет не опубликован на Dockerhub, делайте с ним что хотите.
 
+##### Пример `docker-compose.yaml`
+```yaml
+networks:
+  internal_network:
+    driver: bridge
+
+services:
+  turn-proxy:
+    image: ghcr.io/Urtyom-Alyanov/turn-proxy:latest
+    container_name: turn-proxy
+    restart: always
+    volumes:
+      - /srv/turn-proxy/config.toml:/config.toml:ro
+    ports:
+      - 56040:56040:udp
+    networks:
+      - internal_network
+
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wireguard
+    restart: always
+    networks:
+      - internal_network
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Moscow
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - /srv/wireguard:/config:Z
+      - /lib/modules:/lib/modules:ro
+```
+
+Мы будем учитывать, что конфигурация (и файлы, с связанные с ним) для wireguard располагается на пути `/srv/wireguard`
+Вот пример файла, находящегося на пути `/srv/wireguard/wg_confs/wg0.conf`
+```conf
+[Interface]
+Address = 10.0.0.1/24
+ListenPort = 51820
+PrivateKey = <приватный ключ сервера>
+
+PostUp = INTERFACE=$(ip route show default | awk '{print $5}'); iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE
+PostDown = INTERFACE=$(ip route show default | awk '{print $5}'); iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE
+
+[Peer]
+PublicKey = <публичный ключ клиента>
+AllowedIPs = 10.0.0.2/32
+```
+
+А теперь пример конфигурации, находящегося в файле по пути `/srv/turn-proxy/config.toml`
+
+```toml
+[common]
+listening_on = "0.0.0.0:56040"
+proxy_into = "wireguard:51820" # Если что, внутри докера (или подмана) wireguard это ссылка на контейнер, где лежит сам wireguard, это нужно, чтобы не святить им в открытый интернет
+max_connections = 2000
+```
+
 ## Использование
 
 По умолчанию программа ищет конфигурацию в `/etc/turn-proxy/server/config.toml`, однако можно задать и иной путь
