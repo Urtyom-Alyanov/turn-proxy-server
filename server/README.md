@@ -74,11 +74,9 @@ makepkg -si
 
 ##### Пример `docker-compose.yaml`
 ```yaml
-# То, что закоментировано, это то, как должно быть (то есть как правильно), но правильно пока что нельзя
-
-#networks:
-#  internal_network:
-#    driver: bridge
+networks:
+  internal_network:
+    driver: bridge
 
 services:
   turn-proxy:
@@ -87,20 +85,17 @@ services:
     restart: always
     volumes:
       - /srv/turn-proxy/config.toml:/config.toml:ro
-    network_mode: "container:wireguard"
-    # ports:
-    #   - 56040:56040/udp
+    ports:
+       - 56040:56040/udp
     #networks:
-    #  - internal_network
+      - internal_network
 
   wireguard:
     image: lscr.io/linuxserver/wireguard:latest
     container_name: wireguard
     restart: always
-    ports:
-      - 56040:56040:udp # порт нашего прокси, на который будет стучаться TURN
-    #networks:
-    #  - internal_network
+    networks:
+      - internal_network
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
@@ -136,7 +131,7 @@ AllowedIPs = 10.0.0.2/32
 ```toml
 [common]
 listening_on = "0.0.0.0:56040"
-proxy_into = "127.0.0.1:51820" # Если что, внутри докера (или подмана) wireguard это ссылка на контейнер, где лежит сам wireguard, это нужно, чтобы не святить им в открытый интернет (увы так, пока что, нельзя, потом сделаю)
+proxy_into = "wireguard:51820" # Если что, внутри докера (или подмана) wireguard это ссылка на контейнер, где лежит сам wireguard, это нужно, чтобы не святить им в открытый интернет
 max_connections = 2000
 ```
 
