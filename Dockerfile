@@ -1,17 +1,35 @@
+
+## Этап сборки
 FROM rust:1.94-slim AS builder
 LABEL authors="artemos"
 
-WORKDIR /usr/src/turn-proxy
+### Установка необходимых инструментов и зависимостей
+RUN --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
+    --mount=type=bind,source=Cargo.lock,target=Cargo.lock \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/turn-proxy/target \
+    cargo build --release && \
+    cp target/release/turn-proxy-server /usr/local/bin/turn-proxy-server
+
 COPY . .
 
-RUN cargo build --release
+### Этап финального образа
+WORKDIR /usr/src/turn-proxy
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/turn-proxy/target \
+    cargo build --release && \
+    cp target/release/turn-proxy-server /usr/local/bin/turn-proxy-server
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /usr/src/turn-proxy/target/release/turn-proxy-server /usr/local/bin/turn-proxy-server
-RUN mkdir -p /etc/turn-proxy/server/
+
+## Финальный образ
+FROM gcr.io/distroless/cc-debian12:nonroot
+LABEL authors="artemos"
+
+COPY --from=builder /usr/local/bin/turn-proxy-server /usr/local/bin/turn-proxy-server
 
 EXPOSE 56040/udp
 
+## Здесь можно указать другой путь к конфигурационному файлу, если нужно
+## (в, например, Docker-compose нужно задать volume для этого файла)
 ENTRYPOINT ["turn-proxy-server"]
-CMD ["--config", "/etc/turn-proxy/server/config.toml"]
+CMD ["--config", "/config.toml"]
