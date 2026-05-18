@@ -10,6 +10,10 @@ use crate::config::{
 
 pub fn init_config() -> Result<AppConfig>
 {
+  rustls::crypto::aws_lc_rs::default_provider()
+    .install_default()
+    .expect("Failed to install rustls crypto provider");
+
   let args = Args::parse();
 
   let config = if !args.no_config {

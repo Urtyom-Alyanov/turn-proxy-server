@@ -20,13 +20,13 @@ anyhow.workspace = true
 webrtc-util.workspace = true
 tokio-util.workspace = true
 turn-proxy-lib.workspace = true
+rustls.workspace = true
+reqwest.workspace = true
 
 turn = "0.17.1"
-reqwest = { version = "0.13.2", features = ["json", "form", "hickory-dns", "stream", "gzip", "cookies"] }
 serde_json = "1.0.149"
 uuid = { version = "1.22.0", features = ["v4"] }
 tokio-tungstenite = "0.29.0"
-rustls = { version = "0.23.37", features = ["ring"] }
 futures-util = "0.3.32"
 async-trait = "0.1.89"
 hickory-resolver = "0.25.2"
