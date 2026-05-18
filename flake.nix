@@ -2,34 +2,36 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
+    fenix = {
+      url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
+  outputs = { self, nixpkgs, flake-utils, fenix }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
-          inherit system overlays;
+          inherit system;
         };
 
         cargo = fromTOML (builtins.readFile ./Cargo.toml);
         version = cargo.workspace.package.version;
-
-        rustNightly = pkgs.rust-bin.nightly.latest.default.override {
-          extensions = [ "rustfmt" ];
-        };
-
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "rust-analyzer" "clippy" ];
-        };
-
         makePkg = path: pkgs.callPackage path {
                   lib = pkgs.lib;
                   inherit version;
                 };
+
+        buildToolchain = fenix.packages.${system}.stable.withComponents [
+          "cargo"
+          "rustc"
+          "rust-src"
+          "clippy"
+        ];
+        toolchain = fenix.packages.${system}.combine [
+          buildToolchain
+          fenix.packages.${system}.latest.rustfmt
+        ];
+
       in
         {
           packages = {
@@ -38,15 +40,16 @@
           };
           devShells.default = pkgs.mkShell {
             buildInputs = with pkgs; [
-              rustToolchain
-              rustNightly
+              toolchain
               pkg-config
               openssl
               stdenv.cc.cc.lib
             ];
 
             shellHook = ''
-              export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
+              export RUST_SRC_PATH="${toolchain}/lib/rustlib/src/rust/library"
+              cargo --version
+              echo "Прошу Вас, сделайте мне красиво!"
             '';
           };
         }
