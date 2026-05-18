@@ -27,6 +27,7 @@ futures-util = "0.3.32"
 rustls = { version = "0.23.37", default-features = false, features = ["aws-lc-rs", "logging"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws-lc-rs", "logging"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls-no-provider", "form", "hickory-dns", "stream", "gzip", "cookies"] }
+hickory-resolver = "0.25.2"
 
 [profile.dist]
 inherits = "release"

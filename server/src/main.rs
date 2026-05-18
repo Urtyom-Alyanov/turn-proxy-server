@@ -14,10 +14,11 @@ use crate::{
 async fn main() -> Result<()>
 {
   let _guard = init_logging();
+  let dns_provider = config::dns::configure_system_dns()?;
   let config = init_config()?;
   let dtls_config = dtls_configure()?;
 
-  listening(config, dtls_config).await?;
+  listening(config, dtls_config, dns_provider).await?;
 
   Ok(())
 }

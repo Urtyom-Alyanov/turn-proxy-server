@@ -22,6 +22,8 @@ webrtc-util.workspace = true
 tokio-util.workspace = true
 turn-proxy-lib.workspace = true
 rustls.workspace = true
+hickory-resolver.workspace = true
+reqwest.workspace = true
 
 [package.metadata.deb]
 maintainer = "Urtyom Alyanov <urtyomalyanov@gmail.com>"
